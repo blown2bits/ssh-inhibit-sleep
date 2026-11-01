@@ -33,6 +33,7 @@ clean:
 	systemctl disable $(SERVICE_NAME).timer
 	systemctl stop $(SERVICE_NAME).service
 	systemctl disable $(SERVICE_NAME).service
+	-systemctl stop ssh-inhibit-lock.service
 
 	# Remove the installed files
 	rm -f $(INSTALL_DIR)/ssh-inhibit-sleep.sh
