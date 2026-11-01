@@ -1,36 +1,27 @@
 #!/usr/bin/env bash
+# Requires sshd "UsePAM yes" in sshd; without it SSH logins are not logind sessions, so this will fail to detect them.
 
-INHIBIT_COMMAND="systemd-inhibit --what=sleep --why=ssh_connection sleep infinity"
+# Create a transient mutex service so we know the state of the service
+mutex_unit="ssh-inhibit-sleep-lock.service"
 
-log() {
-    echo "$1"
-}
-
-cleanup() {
-    log "[cleanup] Cleaning up..."
-
-    # Find and stop any transient systemd-inhibit units started by this script.
-    for unit in $(systemctl list-units --no-legend "ssh-inhibit-*.service" | awk '{print $1}'); do
-        systemctl stop "$unit"
-        log "[cleanup] Stopped unit: $unit"
+remote_ssh_session_exists() {
+    local id info
+    for id in $(loginctl list-sessions --no-legend | awk '{print $1}'); do
+        info="$(loginctl show-session "${id}" -p Remote -p Service -p State 2>/dev/null)" || continue
+        # "closing" sessions have logged out but left processes running.
+        [[ "${info}" == *Remote=yes* && "${info}" == *Service=sshd* && "${info}" != *State=closing* ]] && return 0
     done
-    log "[cleanup] Cleanup complete."
+    return 1
 }
 
-
-if ss -t state established | grep -q ':ssh[[:space:]]'; then
-    log "SSH connections detected."
-
-    if ! systemctl list-units --no-legend "ssh-inhibit-*.service" | grep -q running; then
-        # Start systemd-inhibit as a *transient user service*.
-        systemd-run --unit=ssh-inhibit-$RANDOM.service --no-block -p "Description=SSH Inhibit" $INHIBIT_COMMAND
-        log "Started systemd-inhibit unit."
-    else
-        log "systemd-inhibit unit already running."
+if remote_ssh_session_exists; then
+    if ! systemctl is-active --quiet "${mutex_unit}"; then
+        systemctl reset-failed "${mutex_unit}" 2>/dev/null  # systemd-run would barf on a failed ${mutex_unit}, so reset
+        systemd-run --unit="${mutex_unit}" --no-block \
+            systemd-inhibit --what=sleep --why="Active SSH session" sleep infinity
     fi
-else
-    cleanup
-    log "No active SSH connections."
+elif systemctl is-active --quiet "${mutex_unit}"; then
+    systemctl stop "${mutex_unit}"
 fi
 
 exit 0
